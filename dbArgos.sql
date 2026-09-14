@@ -25,24 +25,11 @@ create table app_user
     cpf           CHAR(11)     not null unique,
     email         VARCHAR(120) not null unique,
     active        BOOLEAN      not null default true,
+    first_login   BOOLEAN               default true,
     created_at    TIMESTAMP    not null default current_timestamp,
     updated_at    TIMESTAMP    not null default current_timestamp,
     constraint ck_app_user_cpf check (cpf ~ '^[0-9]{11}$'),
     constraint ck_app_user_email check (email like '%_@_%._%')
-);
-
-
-create table user_credential
-(
-    user_id             UUID primary key references app_user (id) on delete cascade,
-    password_hash       VARCHAR(255) not null,
-    first_login         BOOLEAN               default true,
-    two_factor_on       BOOLEAN      not null default false,
-    failed_attempts     INTEGER      not null default 0,
-    blocked_until       TIMESTAMP,
-    password_changed_at TIMESTAMP,
-    updated_at          TIMESTAMP    not null default current_timestamp,
-    constraint ck_user_credential_attempts check (failed_attempts >= 0)
 );
 
 create table property
@@ -382,7 +369,7 @@ create table access_audit
     happened_at    TIMESTAMP    not null default current_timestamp,
     constraint ck_access_audit_motivo check (
         failure_reason is null or failure_reason in
-                                  ('SENHA_ERRADA', 'CONTA_BLOQUEADA', 'USUARIO_INEXISTENTE')
+                                  ('SENHA_ERRADA', 'CONTA_BLOQUEADA', 'USUARIO_INEXISTENTE', 'TOKEN_INVALIDO')
         )
 );
 
@@ -507,6 +494,7 @@ create index idx_stock_movement_lote_data
 create index idx_application_lot_data on application (lot_id, application_date);
 create index idx_lot_parent on lot (parent_lot_id);
 create index idx_interaction_user_data on interaction_audit (user_id, created_at);
+create index idx_access_audit_user_data on access_audit (user_id, happened_at);
 
 -- functions
 
@@ -555,6 +543,31 @@ begin
 end;
 $$ language plpgsql;
 
+
+create or replace FUNCTION fn_tentativas_falhas(p_user_id UUID)
+    returns INTEGER as
+$$
+DECLARE
+    v_ultimo_sucesso TIMESTAMP;
+    v_tentativas     INTEGER;
+begin
+    select MAX(happened_at)
+    into v_ultimo_sucesso
+    from access_audit
+    where user_id = p_user_id
+      and success;
+
+    select COUNT(*)
+    into v_tentativas
+    from access_audit
+    where user_id = p_user_id
+      and not success
+      and (v_ultimo_sucesso is null or happened_at > v_ultimo_sucesso);
+
+    return v_tentativas;
+end;
+$$ language plpgsql;
+
 -- triggers
 create or replace FUNCTION fn_atualiza_data()
     returns trigger as
@@ -568,11 +581,6 @@ $$ language plpgsql;
 create trigger trg_atualiza_data_app_user
     BEFORE update
     on app_user
-    for each row
-execute FUNCTION fn_atualiza_data();
-create trigger trg_atualiza_data_user_credential
-    BEFORE update
-    on user_credential
     for each row
 execute FUNCTION fn_atualiza_data();
 create trigger trg_atualiza_data_herd
