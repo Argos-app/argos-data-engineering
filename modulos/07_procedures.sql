@@ -434,6 +434,7 @@ DECLARE
     v_pai        UUID;
     v_aux        UUID;
     v_texto      TEXT;
+    v_status     VARCHAR(15);
     v_data       DATE;
     v_lidos      INTEGER := 0;
     v_inseridos  INTEGER := 0;
@@ -822,48 +823,70 @@ begin
                             'NAO INFORMADO'
                                );
 
+                    v_status := fn_de_para_enum(
+                            v_json ->> 'status',
+                            ARRAY[
+                                'ATIVO',
+                                'VENDIDO',
+                                'ABATIDO',
+                                'MORTO',
+                                'RECUPERADO'
+                                ],
+                            'ATIVO'
+                                );
+
+                    v_data := COALESCE(
+                            (v_json ->> 'exception_date')::DATE,
+                            (v_json ->> 'updated_at')::DATE,
+                            current_date
+                              );
+
+                    select id
+                    into v_aux
+                    from lot
+                    where parent_lot_id = v_pai
+                      and is_exception_lot = true
+                      and (v_status <> 'ATIVO' or active = true)
+                      and fn_norm_texto(exception_reason)
+                        =
+                          fn_norm_texto(v_texto)
+                    order by active desc, created_at desc
+                    limit 1;
+
+                    if v_aux is null then
+
+                        insert into lot (
+                            herd_id,
+                            parent_lot_id,
+                            lot_code,
+                            category,
+                            is_exception_lot,
+                            exception_reason,
+                            open_date
+                        )
+                        select
+                            l.herd_id,
+                            l.id,
+                            left(l.lot_code, 13)
+                                || '-EXC'
+                                ||
+                            (
+                                select COUNT(*) + 1
+                                from lot x
+                                where x.parent_lot_id = l.id
+                                  and x.is_exception_lot = true
+                            ),
+                            l.category,
+                            true,
+                            v_texto,
+                            v_data
+                        from lot l
+                        where l.id = v_pai
+                        returning id into v_aux;
+
+                    end if;
+
                     if v_target is null then
-
-                        select id
-                        into v_aux
-                        from lot
-                        where parent_lot_id = v_pai
-                          and is_exception_lot = true
-                          and active = true
-                          and fn_norm_texto(exception_reason)
-                            =
-                              fn_norm_texto(v_texto);
-
-                        if v_aux is null then
-
-                            insert into lot (
-                                herd_id,
-                                parent_lot_id,
-                                lot_code,
-                                category,
-                                is_exception_lot,
-                                exception_reason
-                            )
-                            select
-                                l.herd_id,
-                                l.id,
-                                left(l.lot_code, 13)
-                                    || '-EXC'
-                                    ||
-                                (
-                                    select COUNT(*) + 1
-                                    from lot x
-                                    where x.parent_lot_id = l.id
-                                      and x.is_exception_lot = true
-                                ),
-                                l.category,
-                                true,
-                                v_texto
-                            from lot l
-                            where l.id = v_pai
-                            returning id into v_aux;
-
-                        end if;
 
                         insert into animal_exception (
                             lot_id,
@@ -873,13 +896,17 @@ begin
                             birth_date,
                             current_weight,
                             exception_date,
+                            exception_end_date,
                             exception_reason,
                             status,
                             notes,
                             source_id
                         )
                         values (
-                                   v_aux,
+                                   case
+                                       when v_status = 'RECUPERADO' then v_pai
+                                       else v_aux
+                                   end,
                                    v_pai,
                                    v_json ->> 'ear_tag',
                                    fn_de_para_enum(
@@ -894,61 +921,107 @@ begin
                                    ),
                                    (v_json ->> 'birth_date')::DATE,
                                    (v_json ->> 'current_weight')::NUMERIC,
-                                   COALESCE(
-                                           (v_json ->> 'exception_date')::DATE,
-                                           (v_json ->> 'updated_at')::DATE,
-                                           current_date
-                                   ),
+                                   v_data,
+                                   (v_json ->> 'exception_end_date')::DATE,
                                    left(v_texto, 255),
-                                   fn_de_para_enum(
-                                           v_json ->> 'status',
-                                           ARRAY[
-                                               'ATIVO',
-                                               'VENDIDO',
-                                               'ABATIDO',
-                                               'MORTO',
-                                               'RECUPERADO'
-                                               ],
-                                           'ATIVO'
-                                   ),
+                                   v_status,
                                    v_json ->> 'notes',
                                    v_source::UUID
                                )
                         returning id into v_target;
-
-                        insert into animal_lot_history (
-                            animal_exception_id,
-                            lot_id,
-                            reason
-                        )
-                        values (
-                                   v_target,
-                                   v_aux,
-                                   'EXCECAO'
-                               );
 
                         v_novo := true;
 
                     else
 
                         update animal_exception
-                        set current_weight =
+                        set lot_id =
+                                case
+                                    when v_status = 'RECUPERADO' then v_pai
+                                    else v_aux
+                                end,
+                            origin_lot_id = v_pai,
+                            current_weight =
                                 (v_json ->> 'current_weight')::NUMERIC,
+                            exception_date = v_data,
                             exception_end_date =
                                 (v_json ->> 'exception_end_date')::DATE,
-                            status = fn_de_para_enum(
-                                    v_json ->> 'status',
-                                    ARRAY[
-                                        'ATIVO',
-                                        'VENDIDO',
-                                        'ABATIDO',
-                                        'MORTO',
-                                        'RECUPERADO'
-                                        ],
-                                    'ATIVO'
-                                     ),
+                            status = v_status,
                             notes = v_json ->> 'notes'
                         where id = v_target;
+
+                    end if;
+
+                    update animal_lot_history
+                    set entry_date = v_data,
+                        exit_date =
+                            case
+                                when v_status = 'ATIVO' then null
+                                else COALESCE(
+                                        (v_json ->> 'exception_end_date')::DATE,
+                                        v_data
+                                     )
+                            end
+                    where animal_exception_id = v_target
+                      and lot_id = v_aux
+                      and reason = 'EXCECAO';
+
+                    if not FOUND then
+
+                        insert into animal_lot_history (
+                            animal_exception_id,
+                            lot_id,
+                            entry_date,
+                            exit_date,
+                            reason
+                        )
+                        values (
+                                   v_target,
+                                   v_aux,
+                                   v_data,
+                                   case
+                                       when v_status = 'ATIVO' then null
+                                       else COALESCE(
+                                               (v_json ->> 'exception_end_date')::DATE,
+                                               v_data
+                                            )
+                                   end,
+                                   'EXCECAO'
+                               );
+
+                    end if;
+
+                    if v_status = 'RECUPERADO' then
+
+                        update animal_lot_history
+                        set entry_date = COALESCE(
+                                (v_json ->> 'exception_end_date')::DATE,
+                                v_data
+                                         ),
+                            exit_date = null
+                        where animal_exception_id = v_target
+                          and lot_id = v_pai
+                          and reason = 'RETORNO_EXCECAO';
+
+                        if not FOUND then
+
+                            insert into animal_lot_history (
+                                animal_exception_id,
+                                lot_id,
+                                entry_date,
+                                reason
+                            )
+                            values (
+                                       v_target,
+                                       v_pai,
+                                       COALESCE(
+                                               (v_json ->> 'exception_end_date')::DATE,
+                                               v_data
+                                       ),
+                                       'RETORNO_EXCECAO'
+                                   );
+
+                        end if;
 
                     end if;
 
@@ -1316,7 +1389,8 @@ begin
                             goal,
                             notes,
                             active,
-                            source_id
+                            source_id,
+                            synced_at
                         )
                         select
                             v_pai,
@@ -1368,7 +1442,8 @@ begin
                                     (v_json ->> 'active')::BOOLEAN,
                                     true
                             ),
-                            v_source::UUID
+                            v_source::UUID,
+                            current_timestamp
                         from medicine_batch mb
                         where mb.id = v_aux
                         returning id into v_target;
@@ -1389,7 +1464,8 @@ begin
                                 COALESCE(
                                         (v_json ->> 'active')::BOOLEAN,
                                         true
-                                )
+                                ),
+                            synced_at = current_timestamp
                         where id = v_target;
 
                     end if;
@@ -1484,6 +1560,47 @@ begin
             end;
 
         end loop;
+
+
+
+    update lot l
+    set head_count = (
+        select COUNT(*)::INTEGER
+        from animal_exception ae
+        where ae.lot_id = l.id
+          and ae.status = 'ATIVO'
+    )
+    where l.is_exception_lot = true;
+
+    update lot
+    set active = true,
+        close_date = null
+    where is_exception_lot = true
+      and head_count > 0;
+
+    update lot l
+    set open_date = LEAST(l.open_date, h.primeira_entrada)
+    from (
+             select lot_id, MIN(entry_date) as primeira_entrada
+             from animal_lot_history
+             group by lot_id
+         ) h
+    where l.id = h.lot_id
+      and l.is_exception_lot = true;
+
+    update lot l
+    set active = false,
+        close_date = COALESCE(
+                (
+                    select MAX(h.exit_date)
+                    from animal_lot_history h
+                    where h.lot_id = l.id
+                ),
+                l.close_date,
+                current_date
+                     )
+    where l.is_exception_lot = true
+      and l.head_count = 0;
 
 
 

@@ -601,6 +601,22 @@ begin
         end if;
     end if;
 
+    if TG_OP = 'UPDATE'
+        and OLD.status = 'ATIVO'
+        and NEW.status in ('RECUPERADO', 'VENDIDO', 'ABATIDO', 'MORTO') then
+        update lot l
+        set active = false,
+            close_date = current_date
+        where l.id = OLD.lot_id
+          and l.is_exception_lot = true
+          and not exists (
+              select 1
+              from animal_exception ae
+              where ae.lot_id = l.id
+                and ae.status = 'ATIVO'
+          );
+    end if;
+
     return NEW;
 end;
 $$ language plpgsql;
