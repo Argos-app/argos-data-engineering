@@ -8,7 +8,7 @@ create EXTENSION if not exists unaccent;
 create or replace FUNCTION fn_norm_texto(p_texto TEXT)
     returns TEXT as
 $$
-select NULLIF(TRIM(regexp_replace(lower(unaccent(COALESCE(p_texto, ''))), '\s+', ' ', 'g')), '');
+select NULLIF(TRIM(regexp_replace(lower(public.unaccent(COALESCE(p_texto, ''))), '\s+', ' ', 'g')), '');
 $$ language sql immutable;
 
 create or replace FUNCTION fn_em_carga()
