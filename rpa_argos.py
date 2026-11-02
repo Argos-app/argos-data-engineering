@@ -173,11 +173,29 @@ def extrair_dados(cursor):
         cursor,
         """
         SELECT id_lot AS source_id, id_herd AS source_herd_id,
-               lot_code, category, head_count, open_date, active
+               lot_code, category, head_count,
+               CASE
+                   WHEN open_date >= DATE '0001-01-01'
+                    AND open_date <= DATE '9999-12-31'
+                   THEN open_date
+                   ELSE NULL
+               END AS open_date,
+               open_date::text AS open_date_original,
+               active
         FROM lot
         """,
     )
     for linha in lotes:
+        if linha["open_date"] is None:
+            pendencias.append(
+                (
+                    "lot",
+                    linha,
+                    "Data de abertura ausente ou fora do intervalo aceito pelo Python.",
+                )
+            )
+            continue
+
         categoria_original = (linha["category"] or "").strip().upper()
         if categoria_original not in CATEGORIAS_LOTE:
             pendencias.append(
@@ -195,9 +213,15 @@ def extrair_dados(cursor):
         """
         SELECT a.id_animal AS source_id, a.id_lot AS source_lot_id,
                a.id_origin_lot AS source_origin_lot_id,
-               a.ear_tag, a.current_weight, a.birth_date,
-               a.exception_reason, a.exception_start_date AS exception_date,
-               a.exception_end_date, a.notes, a.active,
+               a.ear_tag, a.current_weight,
+               CASE WHEN a.birth_date >= DATE '0001-01-01' AND a.birth_date < DATE '10000-01-01' THEN a.birth_date ELSE NULL END AS birth_date,
+               CASE WHEN a.birth_date IS NOT NULL AND NOT (a.birth_date >= DATE '0001-01-01' AND a.birth_date < DATE '10000-01-01') THEN a.birth_date::text ELSE NULL END AS birth_date_invalida,
+               a.exception_reason,
+               CASE WHEN a.exception_start_date >= DATE '0001-01-01' AND a.exception_start_date < DATE '10000-01-01' THEN a.exception_start_date ELSE NULL END AS exception_date,
+               CASE WHEN a.exception_start_date IS NOT NULL AND NOT (a.exception_start_date >= DATE '0001-01-01' AND a.exception_start_date < DATE '10000-01-01') THEN a.exception_start_date::text ELSE NULL END AS exception_date_invalida,
+               CASE WHEN a.exception_end_date >= DATE '0001-01-01' AND a.exception_end_date < DATE '10000-01-01' THEN a.exception_end_date ELSE NULL END AS exception_end_date,
+               CASE WHEN a.exception_end_date IS NOT NULL AND NOT (a.exception_end_date >= DATE '0001-01-01' AND a.exception_end_date < DATE '10000-01-01') THEN a.exception_end_date::text ELSE NULL END AS exception_end_date_invalida,
+               a.notes, a.active,
                h_atual.id_property AS current_property_id,
                h_origem.id_property AS origin_property_id
         FROM animal a
@@ -208,6 +232,13 @@ def extrair_dados(cursor):
         """,
     )
     for linha in animais:
+        datas_invalidas = [
+            nome for nome in ("birth_date", "exception_date", "exception_end_date")
+            if linha.get(f"{nome}_invalida") is not None
+        ]
+        if datas_invalidas:
+            pendencias.append(("animal", linha, "Data fora do intervalo aceito: " + ", ".join(datas_invalidas)))
+            continue
         erro = validar_animal(linha)
         if erro:
             pendencias.append(("animal", linha, erro))
@@ -301,6 +332,10 @@ def extrair_dados(cursor):
         """,
     )
     for linha in medicamentos:
+        categoria = (linha.get("therapeutic_category") or "").strip()
+        if categoria.casefold() in ("hormônio", "hormonio"):
+            linha["therapeutic_category"] = "Hormonal"
+            linha["description"] = "Categoria no sistema de origem: " + categoria
         erro = validar_medicamento(linha)
         if erro:
             pendencias.append(("medicine", linha, erro))
@@ -315,8 +350,14 @@ def extrair_dados(cursor):
         """
         SELECT b.id_medication_batch AS source_id,
                b.id_medicine AS source_medicine_id,
-               b.batch_number, b.manufacture_date, b.expiry_date,
-               b.delivery_date, b.initial_quantity,
+               b.batch_number,
+               CASE WHEN b.manufacture_date >= DATE '0001-01-01' AND b.manufacture_date < DATE '10000-01-01' THEN b.manufacture_date ELSE NULL END AS manufacture_date,
+               CASE WHEN b.manufacture_date IS NOT NULL AND NOT (b.manufacture_date >= DATE '0001-01-01' AND b.manufacture_date < DATE '10000-01-01') THEN b.manufacture_date::text ELSE NULL END AS manufacture_date_invalida,
+               CASE WHEN b.expiry_date >= DATE '0001-01-01' AND b.expiry_date < DATE '10000-01-01' THEN b.expiry_date ELSE NULL END AS expiry_date,
+               CASE WHEN b.expiry_date IS NOT NULL AND NOT (b.expiry_date >= DATE '0001-01-01' AND b.expiry_date < DATE '10000-01-01') THEN b.expiry_date::text ELSE NULL END AS expiry_date_invalida,
+               CASE WHEN b.delivery_date >= DATE '0001-01-01' AND b.delivery_date < DATE '10000-01-01' THEN b.delivery_date ELSE NULL END AS delivery_date,
+               CASE WHEN b.delivery_date IS NOT NULL AND NOT (b.delivery_date >= DATE '0001-01-01' AND b.delivery_date < DATE '10000-01-01') THEN b.delivery_date::text ELSE NULL END AS delivery_date_invalida,
+               b.initial_quantity,
                COALESCE(SUM(i.available_quantity), 0) AS available_quantity,
                COUNT(i.id_medication_inventory) AS inventory_count,
                COUNT(i.available_quantity) AS known_quantity_count,
@@ -330,6 +371,13 @@ def extrair_dados(cursor):
         """,
     )
     for linha in lotes_medicamento:
+        datas_invalidas = [
+            nome for nome in ("manufacture_date", "expiry_date", "delivery_date")
+            if linha.get(f"{nome}_invalida") is not None
+        ]
+        if datas_invalidas:
+            pendencias.append(("medicine_batch", linha, "Data fora do intervalo aceito: " + ", ".join(datas_invalidas)))
+            continue
         if linha["source_medicine_id"] not in medicamentos_validos:
             pendencias.append(
                 ("medicine_batch", linha, "Medicamento nao passou pela validacao.")
@@ -347,7 +395,9 @@ def extrair_dados(cursor):
         SELECT id_application AS source_id,
                id_lot AS source_lot_id,
                id_medication_batch AS source_batch_id,
-               date_time, dose, unit, route,
+               CASE WHEN date_time >= DATE '0001-01-01' AND date_time < DATE '10000-01-01' THEN date_time ELSE NULL END AS date_time,
+               CASE WHEN date_time IS NOT NULL AND NOT (date_time >= DATE '0001-01-01' AND date_time < DATE '10000-01-01') THEN date_time::text ELSE NULL END AS date_time_invalida,
+               dose, unit, route,
                treated_head_count AS head_count_applied,
                application_limb AS applied_limb,
                application_site AS applied_site,
@@ -364,6 +414,9 @@ def extrair_dados(cursor):
         if linha["tabela"] == "medicine_batch"
     }
     for linha in aplicacoes:
+        if linha.get("date_time_invalida") is not None:
+            pendencias.append(("application", linha, "Data da aplicacao fora do intervalo aceito pelo Python."))
+            continue
         erro = validar_aplicacao(linha, lotes_por_id, lotes_medicamento_por_id)
         if erro:
             pendencias.append(("application", linha, erro))
@@ -562,6 +615,41 @@ def proteger_dados_atualizados(cursor, registros, pendencias):
     return aceitos
 
 
+def preparar_propriedades_com_endereco(cursor, registros, pendencias, usuario_tecnico):
+    cursor.execute("SELECT is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'property' AND column_name = 'address'")
+    coluna = cursor.fetchone()
+    if not coluna or coluna[0] != "NO":
+        return registros
+    aceitos = []
+    for linha in registros:
+        if linha["tabela"] != "property":
+            aceitos.append(linha)
+            continue
+        cursor.execute("SELECT id FROM property WHERE source_id = %s::uuid", (str(linha["source_id"]),))
+        if cursor.fetchone() is not None:
+            aceitos.append(linha)
+            continue
+        partes = [str(linha.get(campo) or "").strip() for campo in ("street", "number", "complement", "city", "state")]
+        endereco = ", ".join(parte for parte in partes if parte)
+        if not endereco:
+            pendencias.append(("property", linha, "Endereco nao informado no legado."))
+            continue
+        cursor.execute("SAVEPOINT preparar_property")
+        try:
+            cursor.execute("""
+                INSERT INTO property (user_id, name, cnpj, address, street, number, complement, zip_code, city, state, phone, active, source_id)
+                VALUES (%s, %s, fn_so_digitos(%s), %s, LEFT(%s, 150), COALESCE(LEFT(%s, 10), 'S/N'), LEFT(%s, 100), fn_so_digitos(%s), TRIM(%s), UPPER(TRIM(%s)), %s, COALESCE(%s, true), %s::uuid)
+                """, (usuario_tecnico, linha.get("name"), linha.get("cnpj"), endereco, linha.get("street"), linha.get("number"), linha.get("complement"), linha.get("zip_code"), linha.get("city"), linha.get("state"), linha.get("phone"), linha.get("active"), str(linha["source_id"])))
+        except psycopg2.Error as erro:
+            cursor.execute("ROLLBACK TO SAVEPOINT preparar_property")
+            pendencias.append(("property", linha, "Nao foi possivel preparar a propriedade: " + str(erro).splitlines()[0]))
+        else:
+            aceitos.append(linha)
+        finally:
+            cursor.execute("RELEASE SAVEPOINT preparar_property")
+    return aceitos
+
+
 def conferir_usuario_tecnico(cursor):
     cursor.execute("SELECT id FROM app_user WHERE cpf = '00000000000'")
     resultado = cursor.fetchone()
@@ -700,6 +788,10 @@ if __name__ == "__main__":
                     """,
                     (str(usuario_tecnico),),
                 )
+                registros = preparar_propriedades_com_endereco(
+                    cursor_destino, registros, pendencias, usuario_tecnico
+                )
+                registros = proteger_dados_atualizados(cursor_destino, registros, pendencias)
                 id_execucao = registrar_execucao(cursor_destino)
                 destino.commit()
 
