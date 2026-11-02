@@ -65,8 +65,6 @@ def consultar_dados(cursor, sql):
 def validar_animal(linha):
     if not (linha["ear_tag"] or "").strip():
         return "Brinco do animal nao informado."
-    if not (linha["exception_reason"] or "").strip():
-        return "Motivo da excecao nao informado."
     inicio = linha["exception_date"]
     fim = linha["exception_end_date"]
     nascimento = linha["birth_date"]
@@ -384,14 +382,14 @@ def extrair_dados(cursor):
         data_hora = linha.pop("date_time")
         linha["application_date"] = data_hora.date()
         linha["application_time"] = data_hora.time()
-        # Não enviamos source_user_id: a procedure atribui o usuário técnico.
+       
         registros.append({"tabela": "application", **linha})
 
     return registros, pendencias
 
 
 def preparar_json(registro):
-    # default=str converte UUID, data e Decimal para texto aceito pelo JSON.
+    
     return json.dumps(registro, ensure_ascii=False, sort_keys=True, default=str)
 
 
@@ -421,17 +419,12 @@ def conferir_historico(cursor, registros, pendencias):
         origem = str(linha["source_id"])
         erro = None
         if linha["tabela"] == "animal_exception":
-            if origem not in animais and not linha.get("category"):
-                erro = "Categoria do animal ausente; nao atribuir BOI sem confirmacao."
-            elif origem in animais:
+            if origem in animais:
                 lote_origem = mapeamentos.get(
                     ("lot", str(linha["source_origin_lot_id"]))
                 )
                 if lote_origem != animais[origem]:
                     erro = "Lote de origem do animal existente foi alterado no legado."
-        elif linha["tabela"] == "medicine" and ("medicine", origem) not in mapeamentos:
-            if linha.get("needs_prescription") is None:
-                erro = "Necessidade de receita ausente; medicamento nao importado."
         elif linha["tabela"] == "application" and origem in aplicacoes:
             lote = mapeamentos.get(("lot", str(linha["source_lot_id"])))
             frasco = mapeamentos.get(("medicine_batch", str(linha["source_batch_id"])))
@@ -691,14 +684,14 @@ if __name__ == "__main__":
             print(f"Registros preparados: {len(registros)}")
             print(f"Registros sem conversão segura: {len(pendencias)}")
             print("Histórico de carência individual fora do escopo da migração.")
-            print("Novos animais sem categoria confirmada ficam em pendencia.")
+            print("Categoria de animal e necessidade de receita ausentes usam os padroes do banco.")
             usuario_tecnico = conferir_usuario_tecnico(cursor_destino)
 
             if os.getenv("CONFIRMAR_CARGA") != "SIM":
                 print("Modo de conferência: nenhuma linha foi gravada no Argos.")
                 print("Defina CONFIRMAR_CARGA=SIM para executar a migração.")
             else:
-                # A procedure exige esta associação, mas não migra usuários antigos.
+                # A procedure exige esta associação, mas não migra usuários antigos
                 cursor_destino.execute(
                     """
                     INSERT INTO load_mapping (table_name, source_id, target_id, natural_key)
