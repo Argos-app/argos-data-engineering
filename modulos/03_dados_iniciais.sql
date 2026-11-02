@@ -22,6 +22,13 @@ values ('Antibiótico', 'Combate infeccao bacteriana'),
        ('Não informado', 'Fallback da carga: grafia de origem nao reconhecida, revisar')
 on conflict (name) do nothing;
 
+insert into therapeutic_category (name)
+values ('Alcalinizante'),
+       ('Analgésico'),
+       ('Antiprotozoário'),
+       ('Hormônio')
+on conflict do nothing;
+
 insert into app_user (permission_id, name, cpf, email, firebase_uid, first_login)
 select p.id, 'RPA Argos', '00000000000', 'rpa@argos.local', 'rpa-sistema', false
 from permission p
