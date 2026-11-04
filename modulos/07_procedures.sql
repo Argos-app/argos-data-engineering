@@ -30,12 +30,6 @@ begin
                              application_time, dose, unit, route, head_count_applied, goal)
     values (p_lot_id, p_medicine_batch_id, p_user_id, current_date,
             current_time, p_dose, p_unit, p_route, v_cabecas, p_goal);
-
-    commit;
-EXCEPTION
-    when OTHERS then
-        rollback;
-        raise;
 end;
 $$ language plpgsql;
 
@@ -144,14 +138,6 @@ begin
                v_carencia,
                v_carencia <= current_date
            );
-
-
-    commit;
-
-EXCEPTION
-    when OTHERS then
-        rollback;
-        raise;
 end;
 $$ language plpgsql;
 
@@ -312,12 +298,6 @@ begin
             active     = false
         where id = v_sublote;
     end if;
-
-    commit;
-EXCEPTION
-    when OTHERS then
-        rollback;
-        raise;
 end;
 $$ language plpgsql;
 
